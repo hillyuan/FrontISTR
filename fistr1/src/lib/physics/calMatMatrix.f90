@@ -217,18 +217,21 @@ contains
       (gauss, sectType, D,                    &
       e1_hat, e2_hat, e3_hat, cg1, cg2, cg3, &
       alpha, n_layer)
-    !####################################################################
-
+  !####################################################################
+    use m_utilities
     type(tGaussStatus), intent(in)  :: gauss
     integer, intent(in)             :: sectType, n_layer
-    real(kind = kreal), intent(out) :: D(:, :)
+    real(kind = kreal), intent(out) :: D(5,5)
     real(kind = kreal), intent(in)  :: e1_hat(3), e2_hat(3), e3_hat(3)
     real(kind = kreal), intent(in)  :: cg1(3), cg2(3), cg3(3)
     real(kind = kreal), intent(out) :: alpha
 
     !--------------------------------------------------------------------
 
-    real(kind = kreal)       :: c(3, 3, 3, 3)
+    real(kind = kreal)       :: c(3, 3, 3, 3), coordsys(3,3), D3Mat(6,6)
+    real(kind = kreal)       :: Q(6,6),inverse(3,3), trans(3,3)
+    real(kind = kreal)       :: ee, pp, mu, outa(2)
+    logical :: ierr
     type(tMaterial), pointer :: matl
 
     !--------------------------------------------------------------------
@@ -244,15 +247,37 @@ contains
         alpha, n_layer)
 
       call mat_c2d_Shell(c, D, sectType)
+  
+    elseif( isElastoplastic(matl%mtype) ) then
+      call MatlMatrix( gauss, Shell, D3Mat, 0.d0, 0.d0, coordsys, 0.d0 )
+      coordsys(1,:) = e1_hat
+      coordsys(2,:) = e2_hat
+      coordsys(3,:) = e3_hat
+      inverse(:,1) = cg1
+      inverse(:,2) = cg2
+      inverse(:,3) = cg3
+      trans(:,:) = matmul( coordsys, inverse )
+      call transformation(trans, Q)
+      D3Mat = matmul( transpose(Q), matmul(D3Mat, Q) )
+      call mat2Shell(D3Mat, D)
+
+      call fetch_TableData(MC_ISOELASTIC, matl%dict, outa, ierr)
+      if( ierr ) then
+        ee = matl%shell_var(n_layer)%ee
+        pp = matl%shell_var(n_layer)%pp
+      else
+        ee = outa(1)
+        pp = outa(2)
+      end if
+      mu      = 0.5D0*ee/( 1.0D0+pp )
+      alpha = matl%variables(M_ALPHA_OVER_MU)*mu 
     else
       stop "Material type not supported!"
     end if
 
     !--------------------------------------------------------------------
 
-    return
-
-    !####################################################################
+  !####################################################################
   end subroutine MatlMatrix_Shell
   !####################################################################
   ! > (Gaku Hashimoto, The University of Tokyo, 2012/11/15)
@@ -334,5 +359,38 @@ contains
   end subroutine mat_c2d_Shell
   !####################################################################
   ! > (Gaku Hashimoto, The University of Tokyo, 2012/11/15)
+
+  !####################################################################
+  subroutine mat2Shell(matrix, D)
+  !####################################################################
+
+    real(kind = kreal), intent(in)  :: matrix(6, 6)
+    real(kind = kreal), intent(out) :: D(5, 5)
+
+    integer :: i,j
+    real(kind = kreal) :: f(5), finv(5)
+
+    f(1:2) = matrix(3,1:2);    f(3:5) = matrix(3,4:6)
+    finv(1:2) = matrix(3,1:2)/matrix(3,3);    finv(3:5) = matrix(3,4:6)/matrix(3,3)
+
+    do i=1,2
+      do j=1,2
+        D(i,j) = matrix(i,j)-f(i)*finv(j)
+      enddo
+      do j=3,5
+        D(i,j) = matrix(i,j+1)-f(i)*finv(j)
+      enddo
+    enddo
+
+    do i=3,5
+      do j=1,2
+        D(i,j) = matrix(i+1,j)-f(i)*finv(j)
+      enddo
+      do j=3,5
+        D(i,j) = matrix(i+1,j+1)-f(i)*finv(j)
+      enddo
+    enddo
+
+  end subroutine mat2Shell
 
 end module m_MatMatrix

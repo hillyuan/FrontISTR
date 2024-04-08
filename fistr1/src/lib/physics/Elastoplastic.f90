@@ -543,6 +543,205 @@ contains
     fstat(1) = pstrain
   end subroutine BackwardEuler
 
+   !> This subroutine does backward-Euler return calculation
+subroutine BackwardEuler_Shell( matl, De, dstrain, stress, stress_bak, plstrain, istat, fstat, temp )
+    use m_utilities, only : eigen3
+    type( tMaterial ), intent(in)    :: matl        !< material properties
+    real(kind=kreal), intent(in)     :: De(6,6)     !< elastic matrix
+    real(kind=kreal), intent(inout)  :: dstrain(6)  !< strain increment
+    real(kind=kreal), intent(out)    :: stress(6)
+    real(kind=kreal), intent(in)     :: stress_bak(6)   !< trial->real stress
+    real(kind=kreal), intent(in)     :: plstrain    !< plastic strain till current substep
+    integer, intent(inout)           :: istat       !< plastic state
+    real(kind=kreal), intent(inout)  :: fstat(:)    !< plastic strain, back stress
+    real(kind=kreal), intent(in)     :: temp  !< temperature
+
+    real(kind=kreal), parameter :: tol =1.d-3
+    integer, parameter          :: MAXITER = 5
+    real(kind=kreal) :: dlambda, f, reff, mat(3,3)
+    integer :: i,ytype, maxp(1), minp(1), mm, hdflag_in
+    real(kind=kreal) :: youngs, poisson, pstrain, dum, ina(1), ee(2)
+    real(kind=kreal) :: J1,J2,J3, H, KH, KK, dd, yd, G, K, devia(6)
+    real(kind=kreal) :: prnstre(3), prnprj(3,3), tstre(3,3)
+    real(kind=kreal) :: sita, fai, trialprn(3)
+    real(kind=kreal) :: fstat_bak(7)
+    logical          :: kinematic, ierr
+    real(kind=kreal) :: betan, back(6)
+    integer :: isect, maxsect=1000
+
+    !call MatlMatrix( gauss, D3, De, 0.d0, 0.d0, mat, 0.d0, 1 )
+    stress = stress_bak + matmul(De, dstrain)
+
+    ytype = getYieldFunction( matl%mtype )
+    if( ytype==3 ) then
+      call uBackwardEuler( matl, stress, istat, fstat )
+      return
+    endif
+
+    ina(1) = temp
+    call fetch_TableData(MC_ISOELASTIC, matl%dict, ee, ierr, ina)
+    if( ierr ) then
+      stop " fail to fetch young's modulus in elastoplastic calculation"
+    else
+      youngs = ee(1)
+      poisson = ee(2)
+    endif
+    if( youngs==0.d0 ) stop "YOUNG's ratio==0"
+    G = youngs/ ( 2.d0*(1.d0+poisson) )
+    K = youngs/ ( 3.d0*(1.d0-2.d0*poisson) )
+
+    pstrain = plstrain
+    if(isKinematicHarden( matl%mtype ))fstat_bak(2:7)= fstat(8:13)
+    fstat_bak(1) = plstrain
+    f = calYieldFunc( matl, stress, fstat_bak, temp )
+    if( dabs(f)<tol ) then  ! yielded
+      istat = 1
+      return
+    elseif( f<0.d0 ) then   ! not yielded or unloading
+      istat =0
+      return
+    endif
+    reff = f
+
+    istat = 1           ! yielded
+    KH = 0.d0; KK=0.d0; betan=0.d0; back(:)=0.d0
+
+    kinematic = isKinematicHarden( matl%mtype )
+    if( kinematic ) then
+      back(1:6) = fstat(8:13)
+      betan = calCurrKinematic( matl, pstrain )
+    endif
+
+  DO isect=1, maxsect
+
+    J1 = (stress(1)+stress(2)+stress(3))/3.d0
+    devia(1:3) = stress(1:3)-J1
+    devia(4:6) = stress(4:6)
+    if( kinematic ) devia = devia-back
+    yd = cal_equivalent_stress(matl, stress, fstat)
+
+    dlambda = 0.d0
+
+    if( yType==0 ) then    ! Mises or. Isotropic
+      do i=1,MAXITER
+        H= calHardenCoeff( matl, pstrain+dlambda, temp )
+        if( kinematic ) then
+          KH = calKinematicHarden( matl, pstrain+dlambda )
+        endif
+        dd= 3.d0*G+H+KH
+        dlambda = dlambda+f/dd
+        if( dlambda<0.d0 ) then
+          dlambda = 0.d0
+          istat=0; exit
+        endif
+        dum = calCurrYield( matl, pstrain+dlambda, temp )
+        if( kinematic ) then
+          KK = calCurrKinematic( matl, pstrain+dlambda )
+        endif
+        f = yd-3.d0*G*dlambda-dum -(KK-betan)
+        if( dabs(f)<tol*tol ) exit
+      enddo
+      pstrain = pstrain+dlambda
+      if( kinematic ) then
+        KK = calCurrKinematic( matl, pstrain )
+        fstat(2:7) = back(:)+(KK-betan)*devia(:)/yd
+      endif
+      devia(:) = (1.d0-3.d0*dlambda*G/yd)*devia(:)
+      stress(1:3) = devia(1:3)+J1
+      stress(4:6) = devia(4:6)
+      stress(:)= stress(:)+back(:)
+    elseif(yType==1) then    ! Mohr-Coulomb
+      fai = matl%variables(M_PLCONST3)
+
+      !   do j=1,MAXITER
+      J2 = 0.5d0* dot_product( devia(1:3), devia(1:3) ) +  &
+        dot_product( devia(4:6), devia(4:6) )
+      J3 = devia(1)*devia(2)*devia(3)                    &
+        +2.d0* devia(4)*devia(5)*devia(6)                     &
+        -devia(6)*devia(2)*devia(6)                           &
+        -devia(4)*devia(4)*devia(3)                           &
+        -devia(1)*devia(5)*devia(5)
+      sita = -3.d0*dsqrt(3.d0)*J3/( 2.d0*(J2**1.5d0) )
+      if( dabs( dabs(sita)-1.d0 ) <1.d-8 ) sita=sign(1.d0, sita)
+      if( dabs(sita) >1.d0 ) stop "Math Error in Mohr-Coulomb calculation"
+      sita = asin( sita )/3.d0
+      do mm=1,6
+        if( dabs(stress(mm))<1.d-10 ) stress(mm)=0.d0
+      enddo
+      call eigen3( stress, prnstre, prnprj )
+      trialprn = prnstre
+      maxp = maxloc( prnstre )
+      minp = minloc( prnstre )
+      mm = 1
+      if( maxp(1)==1 .or. minp(1)==1 ) mm =2
+      if( maxp(1)==2 .or. minp(1)==2 ) mm =3
+      do i=1,MAXITER
+        H= calHardenCoeff( matl, pstrain, temp )
+        dd= 4.d0*G*( 1.d0+sin(fai)*sin(sita)/3.d0 )+4.d0*K         &
+          *sin(fai)*sin(sita)+4.d0*H*cos(fai)*cos(fai)
+        dlambda = dlambda+f/dd
+        if( 2.d0*dlambda*cos(fai)<0.d0 ) then
+          if( cos(fai)==0.d0 ) stop "Math error in return mapping"
+          dlambda = 0.d0
+          istat=0; exit
+        endif
+        dum = pstrain + 2.d0*dlambda*cos(fai)
+        yd = calCurrYield( matl, dum, temp )
+        f = prnstre(maxp(1))-prnstre(minp(1))+                     &
+          (prnstre(maxp(1))+prnstre(minp(1)))*sin(fai)-            &
+          (4.d0*G*(1.d0+sin(fai)*sin(sita)/3.d0)+4.d0*K*sin(fai)   &
+          *sin(sita))*dlambda-2.d0*yd*cos(fai)
+        if( dabs(f)<tol ) exit
+      enddo
+      pstrain = pstrain + 2.d0*dlambda*cos(fai)
+      prnstre(maxp(1)) = prnstre(maxp(1))-(2.d0*G*(1.d0+sin(fai)/3.d0)  &
+        + 2.d0*K*sin(fai) )*dlambda
+      prnstre(minp(1)) = prnstre(minp(1))+(2.d0*G*(1.d0-sin(fai)/3.d0)  &
+        - 2.d0*K*sin(fai) )*dlambda
+      prnstre(mm) = prnstre(mm)+(4.d0*G/3.d0-2.d0*K)*sin(fai)*dlambda
+
+      tstre(:,:) = 0.d0
+      tstre(1,1)= prnstre(1); tstre(2,2)=prnstre(2); tstre(3,3)=prnstre(3)
+      mat= matmul( prnprj, tstre )
+      mat= matmul( mat, transpose(prnprj) )
+      stress(1) = mat(1,1)
+      stress(2) = mat(2,2)
+      stress(3) = mat(3,3)
+      stress(4) = mat(1,2)
+      stress(5) = mat(2,3)
+      stress(6) = mat(3,1)
+    elseif(yType==2) then    ! Drucker-Prager
+      fai = matl%variables(M_PLCONST3)
+      dum = matl%variables(M_PLCONST4)
+      do i=1,MAXITER
+        H= calHardenCoeff( matl, pstrain, temp )
+        dd= G+K*fai*fai+H*dum*dum
+        dlambda = dlambda+f/dd
+        if( dum*dlambda<0.d0 ) then
+          if( dum==0.d0 ) stop "Math error in return mapping"
+          dlambda = 0.d0
+          istat=0; exit
+        endif
+        f = calCurrYield( matl, pstrain+dum*dlambda, temp  )
+        f = yd-G*dlambda+fai*(J1-K*fai*dlambda)- dum*f
+        if( dabs(f)<tol*tol ) exit
+      enddo
+      pstrain = pstrain+dum*dlambda
+      devia(:) = (1.d0-G*dlambda/yd)*devia(:)
+      J1 = J1-K*fai*dlambda
+      stress(1:3) = devia(1:3)+J1
+      stress(4:6) = devia(4:6)
+    end if
+    if( dabs(stress(3))<1.d-8*reff ) exit
+    dstrain(3) = dstrain(3)-stress(3)/De(3,3)
+    pstrain = fstat_bak(1)
+
+    stress(:) = stress_bak(1:6)+ matmul( De(1:6,1:6), dstrain(1:6) ) 
+    f = calYieldFunc( matl, stress, fstat_bak, temp )
+  enddo
+  fstat(1) = pstrain
+end subroutine BackwardEuler_Shell
+
   !> Clear elatoplastic state
   subroutine updateEPState( gauss )
     use mMechGauss

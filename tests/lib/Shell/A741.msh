@@ -1,0 +1,19 @@
+!HEADER
+ TEST MODEL A741
+##RESTART,WRITE
+!NODE
+   1,       .00,       .00,       .00
+   2,       1.0,     0.0,  0.0
+   3,       0.0,    1.0,  0.0
+   4,       1.0,    1.0,  0.0
+!ELEMENT, TYPE=741
+ 1, 1, 2,4,3
+!SECTION, TYPE=SHELL, EGRP=ALL, MATERIAL=M1
+ 0.001,9
+!MATERIAL, NAME=M1, ITEM=2
+!ITEM=1, SUBITEM=2
+ 10.0E+04,   0.0
+!ITEM=2, SUBITEM=1
+ 8.01E-10
+!END
+

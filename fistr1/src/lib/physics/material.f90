@@ -149,6 +149,7 @@ module mMaterial
     real(kind=kreal)           :: variables(200)    !< material properties
     type(tshellmat), pointer   :: shell_var(:)      !< material properties for shell
     integer(kind=kint)         :: totallyr          !< total layer of element
+    integer(kind=kint)         :: integpoints       !< number of gauss points along shell thickness
     integer(kind=kint)         :: cdsys_ID          !< ID of material coordinate system
     integer(kind=kint)         :: n_table           !< size of table
     real(kind=kreal), pointer  :: table(:)=>null()  !< material properties in tables
