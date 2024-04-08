@@ -444,8 +444,9 @@ contains
   end subroutine
 
   !> Obtains the number of quadrature points of the element
-  integer function NumOfQuadPoints( fetype )
+  integer function NumOfQuadPoints( fetype, ngg )
     integer, intent(in) :: fetype         !< element type
+    integer, optional   :: ngg            !< number of quadrature points along shell thickness
     select case (fetype)
       case (fe_line2n, fe_tri3n, fe_tet4n, fe_beam2n , fe_beam341, fe_truss )
         NumOfQuadPoints = 1
